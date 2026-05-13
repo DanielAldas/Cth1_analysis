@@ -1,0 +1,64 @@
+---
+title: "Cth1 samples"
+author: "Daniel Aldas"
+date: "2026-05-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(tidyverse)
+```
+
+```{r}
+sample_info <- fread("/n/analysis/Bazzini/gk2307/MOLNG-4589/2534540767/Sample_Report.csv")
+```
+
+```{r}
+sample_info_wider <- sample_info |> 
+  dplyr::select(LibraryID, SampleName, Output) |>
+  mutate(SampleName = str_replace(SampleName, "\\+", "_pos_"),
+         SampleName = paste0(SampleName, "_Ribo_depleted"),
+         Output = str_replace(Output, LibraryID, SampleName),
+         LibraryID = SampleName,
+         Output = str_replace(Output, "_S\\d+_", "_")) |>
+  group_by(LibraryID, SampleName) |>
+  mutate(file_n = paste0("raw_file", row_number())) |>
+  ungroup() |>
+  pivot_wider(names_from = file_n, values_from = Output)
+
+fwrite(sample_info_wider, "../data/metadata_reference_for_GEO.csv")
+```
+
+
+```{r}
+guide_name_GEO <- sample_info |> 
+  dplyr::select(LibraryID, SampleName, Output, FastqPath) |>
+  mutate(SampleName = str_replace(SampleName, "\\+", "_pos_"),
+         SampleName = paste0(SampleName, "_Ribo_depleted"),
+         GEO_Output = str_replace(Output, LibraryID, SampleName),
+         LibraryID = SampleName,
+         GEO_Output = str_replace(GEO_Output, "_S\\d+_", "_")) |>
+  group_by(LibraryID, SampleName) |>
+  mutate(file_n = paste0("raw_file", row_number())) |>
+  ungroup() |>
+  dplyr::select(FastqPath, GEO_Output)
+
+fwrite(guide_name_GEO, "../data/guide_name_GEO.csv")
+```
+
+```{r}
+sample_info_wider |>
+  pivot_longer(!c(LibraryID, SampleName), values_to = "GEO_name") |>
+  dplyr::select(GEO_name)
+```
+
+
+```{r}
+md5sums <- fread("../data/GEO_data/md5sums.txt", header = F) |>
+  dplyr::select(file_name = V2,file_checksum = V1)
+
+fwrite(md5sums, "../data/md5sums.csv")
+```
+

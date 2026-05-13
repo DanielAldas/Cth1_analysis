@@ -1,0 +1,144 @@
+---
+title: "Step 5: Characterize Gene Groups (CDS and UTR Lengths)"
+author: "Daniel Aldas-Bulos"
+date: "2025-07-21"
+output: html_document
+---
+
+## Purpose
+
+Query Ensembl (v106) via biomaRt to retrieve CDS, 3'UTR, and 5'UTR sequences
+for all genes in the groups table, then compare length distributions between g3
+and control groups using sina plots and Wilcoxon tests.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+source("00_setup.R")
+load(file.path(results_dir, "01_groups.RData"))
+```
+
+## Query biomaRt (Ensembl v106)
+
+Using the April 2022 archive host (Ensembl release 106) and batched queries
+to avoid HTTP 500 errors on heavy sequence attributes.
+
+```{r biomart-query}
+# I have to downgrade httr2 due to problems using bioMart
+# remotes::install_version("httr2", version = "1.0.7")
+
+ensembl <- biomaRt::useEnsembl(biomart = "genes", dataset = "drerio_gene_ensembl", version = 106)
+
+cds <- batch_getBM(
+  attributes = c("ensembl_transcript_id", "transcript_length", "coding"),
+  filters    = "ensembl_transcript_id",
+  values     = groups$Transcript_ID,
+  mart       = ensembl
+)
+
+utr3 <- batch_getBM(
+  attributes = c("ensembl_transcript_id", "transcript_length", "3utr"),
+  filters    = "ensembl_transcript_id",
+  values     = groups$Transcript_ID,
+  mart       = ensembl
+)
+
+utr5 <- batch_getBM(
+  attributes = c("ensembl_transcript_id", "transcript_length", "5utr"),
+  filters    = "ensembl_transcript_id",
+  values     = groups$Transcript_ID,
+  mart       = ensembl
+)
+
+# Compute lengths
+utr3 <- utr3 |> mutate(len_3utr = nchar(`3utr`))
+utr5 <- utr5 |> mutate(len_5utr = nchar(`5utr`))
+cds  <- cds  |> mutate(cds_len   = nchar(coding))
+```
+
+## Merge length data with groups
+
+```{r merge-lengths}
+group_lengths <- merge(utr3 |> dplyr::select(-`3utr`),
+                       utr5 |> dplyr::select(-`5utr`)) |>
+  merge(cds |> dplyr::select(-coding)) |>
+  merge(groups, by.y = "Transcript_ID", by.x = "ensembl_transcript_id") |>
+  mutate(
+    tx_len     = len_5utr + cds_len + len_3utr,
+    len_5_test = transcript_length - cds_len - len_3utr
+  )
+```
+
+## CDS length distribution
+
+```{r cds-sina, fig.width=7, fig.height=5}
+cds_sina <- ggplot(group_lengths, aes(x = group, y = cds_len, fill = group, color = group)) +
+  geom_sina(shape = 21, size = 1, stroke = 0.15) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.5,
+               position = position_dodge(width = 0.9),
+               aes(group = group), color = "black") +
+  coord_cartesian(ylim = c(0, 4900)) +
+  theme_pubr() +
+  scale_fill_manual(values = alpha(colors_guide, 0.5)) +
+  scale_color_manual(values = colors_guide) +
+  labs(x = "Group", color = "Group", y = "CDS length (nt)",
+       title = "CDS length distribution")
+
+cds_sina
+ggsave(file.path(figures_dir, "cds_sinaplot.pdf"), cds_sina, width = 7, height = 7)
+```
+
+## 3'UTR length distribution
+
+```{r utr3-sina, fig.width=7, fig.height=5}
+sina_3utr <- ggplot(group_lengths, aes(x = group, y = len_3utr, fill = group, color = group)) +
+  geom_sina(shape = 21, size = 1, stroke = 0.15) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.5,
+               position = position_dodge(width = 0.9),
+               aes(group = group), color = "black") +
+  theme_pubr() +
+  scale_fill_manual(values = alpha(colors_guide, 0.5)) +
+  scale_color_manual(values = colors_guide) +
+  labs(x = "Group", color = "Group", y = "3'UTR length (nt)",
+       title = "3'UTR length distribution")
+
+sina_3utr
+ggsave(file.path(figures_dir, "3utr_sinaplot.pdf"), sina_3utr, width = 7, height = 7)
+
+len_3utr_pval <- wilcox_vs_baseline(
+  group_lengths, class_col = "group", baseline = "g3", value_col = "len_3utr"
+) |> mutate(baseline = "g3") |> dplyr::relocate(baseline, .before = everything())
+
+fwrite(len_3utr_pval, file.path(results_dir, "len_3utr_pval.csv"))
+```
+
+## 5'UTR length distribution
+
+```{r utr5-sina, fig.width=7, fig.height=5}
+sina_5utr <- ggplot(group_lengths, aes(x = group, y = len_5_test, fill = group, color = group)) +
+  geom_sina(shape = 21, size = 1, stroke = 0.15) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.5,
+               position = position_dodge(width = 0.9),
+               aes(group = group), color = "black") +
+  coord_cartesian(ylim = c(0, 500)) +
+  theme_pubr() +
+  scale_fill_manual(values = alpha(colors_guide, 0.5)) +
+  scale_color_manual(values = colors_guide) +
+  labs(x = "Group", color = "Group", y = "5'UTR length (nt)",
+       title = "5'UTR length distribution")
+
+sina_5utr
+ggsave(file.path(figures_dir, "5utr_sinaplot.pdf"), sina_5utr, width = 7, height = 7)
+```
+
+## Save intermediate objects
+
+```{r save}
+# UTR sequences are needed downstream for motif analysis
+utr_seqs <- merge(utr3, groups, by.x = "ensembl_transcript_id", by.y = "Transcript_ID") |>
+  dplyr::rename(utr3 = `3utr`)
+
+save(
+  group_lengths, utr_seqs, utr3, utr5, cds, ensembl,
+  file = file.path(results_dir, "05_characterize.RData")
+)
+```

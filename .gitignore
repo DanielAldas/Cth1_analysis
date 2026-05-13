@@ -1,0 +1,11 @@
+# Raw sequencing data (too large for git; will be deposited in GEO)
+data/RNAseq/
+
+# R session artifacts
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# OS artifacts
+.DS_Store

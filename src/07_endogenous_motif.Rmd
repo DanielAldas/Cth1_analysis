@@ -1,0 +1,206 @@
+---
+title: "Step 7: Endogenous Motif Classification and KD Effects"
+author: "Daniel Aldas-Bulos"
+date: "2025-07-21"
+output: html_document
+---
+
+## Purpose
+
+Classify all filtered genes (not just g3) by the presence of enriched motifs
+in their 3'UTRs, then compare KD effects and decay rates across motif classes.
+Classes are defined hierarchically: 3A 8-mer > 2A 8-mer > more than one site > one site > rest.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+source("00_setup.R")
+load(file.path(results_dir, "01_groups.RData"))
+load(file.path(results_dir, "03_timecourse.RData"))
+load(file.path(results_dir, "05_characterize.RData"))
+load(file.path(results_dir, "06_motif.RData"))
+```
+
+## Retrieve all 3'UTR sequences for filtered genes
+
+```{r get-all-utrs}
+transcripts_all <- len_3utr |> filter(Gene_ID %in% DGE_results_4h_filtered$Gene_ID)
+
+# Reuse the ensembl connection from step 05 (loaded via RData),
+# or reconnect if running this step standalone:
+if (!exists("ensembl")) {
+  ensembl <- useEnsembl(
+    biomart = "genes",
+    dataset = "drerio_gene_ensembl",
+    host    = "https://apr2022.archive.ensembl.org"
+  )
+}
+
+utr3_all <- batch_getBM(
+  attributes = c("ensembl_transcript_id", "ensembl_gene_id", "transcript_length", "3utr"),
+  filters    = "ensembl_transcript_id",
+  values     = transcripts_all$Transcript_ID,
+  mart       = ensembl
+) |>
+  dplyr::rename(utr3 = `3utr`, Gene_ID = ensembl_gene_id)
+
+```
+
+## Find motif occurrences (8-mers and 7-mers)
+
+```{r find-motifs}
+genes_8mer <- find_motif_positions(utr3_all, c("AAUAAAUA", "AAUAAUAA")) |>
+  merge(utr3_all, by.x = "Transcript_ID", by.y = "ensembl_transcript_id") |>
+  mutate(Len = nchar(utr3))
+
+# Count motif types per transcript
+classes_8mer <- genes_8mer |>
+  group_by(Transcript_ID) |>
+  summarise(
+    n_AAA = sum(motif == "AAUAAAUA"),
+    n_AA  = sum(motif == "AAUAAUAA"),
+    .groups = "drop"
+  )
+
+AAA_transcripts <- classes_8mer |> filter(n_AAA > 0) |> distinct(Transcript_ID)
+AA_transcripts  <- classes_8mer |> filter(n_AA > 0)  |> distinct(Transcript_ID)
+just_1    <- classes_8mer |> mutate(total = n_AAA + n_AA) |> filter(total == 1) |> distinct(Transcript_ID)
+more_than1 <- classes_8mer |> mutate(total = n_AAA + n_AA) |> filter(total > 1) |> distinct(Transcript_ID)
+```
+
+## Build endogenous motif groups
+
+```{r build-groups}
+endogenous_groups <- rbind(
+  AAA_transcripts |> mutate(group = "3A 8mer"),
+  AA_transcripts  |> mutate(group = "2A 8mer"),
+  just_1          |> mutate(group = "one site"),
+  more_than1      |> mutate(group = "more than one site"),
+  utr3_all |> transmute(Transcript_ID = ensembl_transcript_id, group = "Rest of genes")
+)
+
+endogenous_groups_data <- merge(
+  endogenous_groups,
+  utr3_all |> dplyr::transmute(Gene_ID, Transcript_ID = ensembl_transcript_id),
+  by = "Transcript_ID"
+)
+```
+
+## Stacked bar chart of motif class distribution
+
+```{r stacked-bar, fig.width=6, fig.height=5}
+endogenous_count <- endogenous_groups |>
+  dplyr::count(group, sort = TRUE) |>
+  mutate(
+    group = factor(group, levels = c("3A 8mer", "2A 8mer",
+                                     "more than one site", "one site",
+                                     "Rest of genes")),
+    type = ifelse(group == "Rest of genes", "Without motif", "With motif")
+  )
+
+endogenous_stack <- ggplot(endogenous_count, aes(fill = group, y = n, x = type)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = n), position = position_stack(vjust = 0.5), hjust = -0.3) +
+  scale_fill_manual(values = highlight_colors) +
+  theme_pubr() +
+  labs(x = "", fill = "Group")
+
+endogenous_stack
+ggsave(file.path(figures_dir, "stack_endogenous_with_motif.pdf"), endogenous_stack, width = 7, height = 7)
+```
+
+## ECDF of KD effects by motif class
+
+```{r kd-ecdf, fig.width=8, fig.height=5}
+highlight_endogenous_all <- merge(DGE_results_4h_filtered, endogenous_groups_data, by = "Gene_ID")
+
+ecdf_4h_g2 <- ggplot(highlight_endogenous_all, aes(
+  x = s_cas13d_pos_syn_g2_4h_VS_s_cas13d_4h.logFC, color = group
+)) +
+  stat_ecdf(geom = "line") +
+  coord_cartesian(xlim = c(-0.5, 2)) +
+  scale_color_manual(values = highlight_colors) +
+  theme_pubr() +
+  labs(x = "RNA Log2 FC cth1 KD gRNA2 vs cas13d alone (4 hpf)",
+       title = "KD effect by motif class gRNA2, 4 hpf")
+
+ecdf_4h_g2
+ggsave(file.path(figures_dir, "ecdf_4h_endogenous_KD_g2.pdf"), ecdf_4h_g2, width = 7, height = 7)
+```
+
+## Wilcoxon tests for KD effects
+
+```{r kd-wilcoxon}
+kd_wilcox_g2 <- map_dfr(c("2h", "4h"), function(tp) {
+  lfc_col <- paste0("s_cas13d_pos_syn_g2_", tp, "_VS_s_cas13d_", tp, ".logFC")
+  wilcox_vs_baseline(
+    data.frame(highlight_endogenous_all),
+    class_col = "group", baseline = "Rest of genes",
+    value_col = lfc_col, alternative = "two.sided"
+  ) |> mutate(timepoint = tp, grna = "g2")
+})
+
+fwrite(kd_wilcox_g2, file.path(results_dir, "wilcoxon_endogenous_g2.csv"))
+```
+
+## Endogenous decay analysis (alpha-amanitin)
+
+```{r endogenous-decay}
+santi_endogenous <- santi |> merge(endogenous_groups_data, by = "Gene_ID")
+
+pseudocount <- 0.05
+
+santi_decay_alpha <- santi_endogenous |>
+  filter(`Treatment_wt-0_hrs-RNAseq_ribo` > 5) |>
+  dplyr::select(Gene_ID, contains("aamanitin"), group) |>
+  mutate(
+    `Alpha_3hpf/2hpf` = log2((`Treatment_aamanitin-3_hrs-RNAseq_polya` + pseudocount) /
+                              (`Treatment_aamanitin-2_hrs-RNAseq_polya` + pseudocount)),
+    `Alpha_4hpf/2hpf` = log2((`Treatment_aamanitin-4_hrs-RNAseq_polya` + pseudocount) /
+                              (`Treatment_aamanitin-2_hrs-RNAseq_polya` + pseudocount)),
+    `Alpha_5hpf/2hpf` = log2((`Treatment_aamanitin-5_hrs-RNAseq_polya` + pseudocount) /
+                              (`Treatment_aamanitin-2_hrs-RNAseq_polya` + pseudocount)),
+    `Alpha_6hpf/2hpf` = log2((`Treatment_aamanitin-6_hrs-RNAseq_polya` + pseudocount) /
+                              (`Treatment_aamanitin-2_hrs-RNAseq_polya` + pseudocount)),
+    `Alpha_7hpf/2hpf` = log2((`Treatment_aamanitin-7_hrs-RNAseq_polya` + pseudocount) /
+                              (`Treatment_aamanitin-2_hrs-RNAseq_polya` + pseudocount))
+  ) |>
+  dplyr::select(-starts_with("Treatment")) |>
+  pivot_longer(cols = starts_with("Alpha"),
+               names_to = "timepoint", names_pattern = "Alpha_(.*)",
+               values_to = "log2_fc")
+```
+
+```{r decay-alpha-ecdf, fig.width=10, fig.height=8}
+decay_alpha_all <- ggplot(santi_decay_alpha, aes(x = log2_fc, color = group)) +
+  stat_ecdf(geom = "step") +
+  coord_cartesian(xlim = c(-3, 3)) +
+  scale_color_manual(values = highlight_colors) +
+  theme_pubr() +
+  facet_wrap(~timepoint)
+
+decay_alpha_all
+ggsave(file.path(figures_dir, "endogenous_decay_alpha.pdf"), decay_alpha_all,
+       width = 12, height = 10)
+```
+
+```{r decay-wilcoxon}
+endogenous_alpha_pvals <- map_dfr(c("4hpf/2hpf", "5hpf/2hpf", "6hpf/2hpf"), function(tp) {
+  wilcox_vs_baseline(
+    dplyr::filter(santi_decay_alpha, timepoint == tp),
+    class_col = "group", baseline = "Rest of genes", value_col = "log2_fc"
+  ) |> mutate(timepoint = tp)
+})
+
+fwrite(endogenous_alpha_pvals, file.path(results_dir, "wilcoxon_endogenous_alpha.csv"))
+```
+
+## Save intermediate objects
+
+```{r save}
+save(
+  endogenous_groups, endogenous_groups_data,
+  utr3_all, highlight_endogenous_all,
+  santi_endogenous, santi_decay_alpha,
+  file = file.path(results_dir, "07_endogenous.RData")
+)
+```

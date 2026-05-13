@@ -1,0 +1,191 @@
+---
+title: "Step 6: K-mer Enrichment and Meta-Analysis"
+author: "Daniel Aldas-Bulos"
+date: "2025-07-21"
+output: html_document
+---
+
+## Purpose
+
+Identify enriched RNA motifs (5–10 nt k-mers) in the 3'UTRs of g3 genes
+compared to each of the four control groups (c1–c4). Combine p-values across
+control comparisons using Fisher's method. Visualize enriched k-mers with
+volcano plots, sequence logos, and positional bias analysis.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+source("00_setup.R")
+ load(file.path(results_dir, "01_groups.RData"))
+load(file.path(results_dir, "05_characterize.RData"))
+```
+
+## Prepare 3'UTR sequences by group
+
+```{r prepare-seqs}
+g3_utr <- utr_seqs |> filter(group == "g3")
+c1_utr <- utr_seqs |> filter(group == "c1")
+c2_utr <- utr_seqs |> filter(group == "c2")
+c3_utr <- utr_seqs |> filter(group == "c3")
+c4_utr <- utr_seqs |> filter(group == "c4")
+
+g3_seqs <- DNAStringSet(g3_utr$utr3)
+c1_seqs <- DNAStringSet(c1_utr$utr3)
+c2_seqs <- DNAStringSet(c2_utr$utr3)
+c3_seqs <- DNAStringSet(c3_utr$utr3)
+c4_seqs <- DNAStringSet(c4_utr$utr3)
+
+cat("g3 UTRs:", length(g3_seqs), "\n")
+cat("Control UTRs: c1 =", length(c1_seqs), ", c2 =", length(c2_seqs),
+    ", c3 =", length(c3_seqs), ", c4 =", length(c4_seqs), "\n")
+```
+
+## Export FASTA files (for external k-mer counting)
+
+```{r export-fasta}
+fasta_dir <- file.path("..", "data", "fasta")
+dir.create(fasta_dir, showWarnings = FALSE, recursive = TRUE)
+
+create_fasta(g3_utr, file.path(fasta_dir, "g3_3utr.fa"), as_rna = TRUE)
+create_fasta(c1_utr, file.path(fasta_dir, "c1_3utr.fa"), as_rna = TRUE)
+create_fasta(c2_utr, file.path(fasta_dir, "c2_3utr.fa"), as_rna = TRUE)
+create_fasta(c3_utr, file.path(fasta_dir, "c3_3utr.fa"), as_rna = TRUE)
+create_fasta(c4_utr, file.path(fasta_dir, "c4_3utr.fa"), as_rna = TRUE)
+```
+
+## Load k-mer enrichment results (from external pipeline)
+
+The k-mer enrichment was computed on the HPC cluster comparing g3 vs each
+control group. Results are read and combined here.
+
+```{r load-kmers}
+kmer_files <- list(
+  c1 = file.path(results_dir, "kmers", "g3_all_vs_c1.csv"),
+  c2 = file.path(results_dir, "kmers", "g3_all_vs_c2.csv"),
+  c3 = file.path(results_dir, "kmers", "g3_all_vs_c3.csv"),
+  c4 = file.path(results_dir, "kmers", "g3_all_vs_c4.csv")
+)
+
+kmers_raw <- imap_dfr(kmer_files, ~ fread(.x) |> data.frame() |> mutate(iteration = .y))
+
+# Split by k-mer size
+kmers_by_k <- map(5:10, ~ kmers_raw |> filter(k == .x))
+names(kmers_by_k) <- paste0("kmers_", 5:10)
+```
+```{r}
+fread("../results/kmers/g3_all_vs_c4.csv")
+```
+
+
+## Meta-analysis (Fisher's method)
+
+```{r meta-analysis}
+kmers_meta <- map(kmers_by_k, meta_analysis)
+names(kmers_meta) <- paste0("kmers_", 5:10, "_p")
+
+# Also run on all k-mers combined
+kmers_all_p <- meta_analysis(kmers_raw)
+```
+
+## Volcano plots of enriched k-mers
+
+```{r volcano-function}
+enriched_kmers_plot <- function(df_plot, k = 5, xlim = c(-2, 2)) {
+
+  # Subsample for plotting efficiency if very large
+  if (nrow(df_plot) > 20000) {
+    df_plot <- rbind(
+      df_plot |> sample_n(15000),
+      df_plot |> filter(fisher_padj < 1)
+    )
+  }
+
+  enriched_data <- df_plot |> filter(fisher_padj <= 0.01, log2fc > 0)
+
+  volcano <- ggplot(df_plot, aes(x = log2fc, y = -log10(fisher_padj))) +
+    geom_hline(yintercept = -log10(0.01), color = "lightgray", linetype = 2) +
+    geom_point(shape = 21, color = "lightgray", alpha = 0.5,
+               stroke = 0.15, size = 0.8, fill = "lightgray") +
+    geom_point(data = enriched_data,
+               shape = 21, alpha = 0.5, stroke = 0.15, size = 1.2,
+               fill = alpha("dodgerblue", 0.5), color = "dodgerblue") +
+    geom_text_repel(data = enriched_data, aes(label = kmer), size = 2) +
+    coord_cartesian(xlim = xlim) +
+    theme_pubr() +
+    labs(title = paste0("Enriched ", k, "-mers in g3 vs control groups"),
+         x = "Log2 FC normalized k-mer counts (g3 / mean controls)",
+         y = "-log10 p-value (Fisher's method)")
+
+  ggsave(file.path(figures_dir, paste0("volcano_", k, "mers_g3.pdf")),
+         volcano, width = 7, height = 7)
+
+  return(volcano)
+}
+```
+
+```{r plot-volcanoes, fig.width=7, fig.height=7}
+enriched_kmers_plot(kmers_meta$kmers_5_p,  k = 5)
+enriched_kmers_plot(kmers_meta$kmers_6_p,  k = 6)
+enriched_kmers_plot(kmers_meta$kmers_7_p,  k = 7)
+enriched_kmers_plot(kmers_meta$kmers_8_p,  k = 8, xlim = c(-2, 2.5))
+enriched_kmers_plot(kmers_meta$kmers_9_p,  k = 9)
+enriched_kmers_plot(kmers_meta$kmers_10_p, k = 10)
+```
+
+## Positional bias of enriched motifs
+
+```{r positional-bias, fig.width=10, fig.height=5}
+candidate_motifs <- c("AUAAAUA", "AAUAAAU")
+
+# Find motif positions in each group
+position_data <- map_dfr(
+  list(g3 = g3_utr, c1 = c1_utr, c2 = c2_utr, c3 = c3_utr, c4 = c4_utr),
+  function(utr_df) {
+    find_motif_positions(utr_df, candidate_motifs) |>
+      merge(utr_df |> dplyr::select(ensembl_transcript_id, len_3utr),
+            by.x = "Transcript_ID", by.y = "ensembl_transcript_id")
+  },
+  .id = "group"
+) |>
+  mutate(
+    relative_position = end / len_3utr,
+    distance          = len_3utr - end
+  )
+
+# Distance to poly(A) tail
+distance_plot <- position_data |>
+  ggplot(aes(x = -distance, color = group)) +
+  geom_density() +
+  scale_color_manual(values = colors_guide) +
+  theme_minimal() +
+  labs(x = "Distance to poly(A) tail (nt)",
+       color = "Group",
+       title = "Motif distance to poly(A) tail") +
+  facet_grid(~motif)
+
+distance_plot
+ggsave(file.path(figures_dir, "distance_plot.pdf"), distance_plot, width = 7, height = 7)
+
+# Relative position along 3'UTR
+relative_plot <- position_data |>
+  ggplot(aes(x = relative_position, color = group)) +
+  geom_density() +
+  scale_color_manual(values = colors_guide) +
+  theme_minimal() +
+  labs(x = "Relative position along 3'UTR",
+       color = "Group",
+       title = "Motif relative position in 3'UTR") +
+  facet_grid(~motif)
+
+relative_plot
+ggsave(file.path(figures_dir, "relative_position_plot.pdf"), relative_plot, width = 7, height = 7)
+```
+
+## Save intermediate objects
+
+```{r save}
+save(
+  g3_utr, c1_utr, c2_utr, c3_utr, c4_utr,
+  kmers_meta, kmers_all_p, position_data,
+  file = file.path(results_dir, "06_motif.RData")
+)
+```

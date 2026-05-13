@@ -1,0 +1,199 @@
+---
+title: "Step 3: Timecourse Expression Patterns"
+author: "Daniel Aldas-Bulos"
+date: "2025-07-21"
+output: html_document
+---
+
+## Purpose
+
+Characterize the expression dynamics of gene groups (g3 vs c1–c4) across a
+wild-type zebrafish developmental timecourse (0–8 hpf). This uses Santi's
+timecourse TPM data from three library types: RiboZero, Poly(A)-selected,
+and alpha-amanitin–treated poly(A).
+
+Plots include sina plots, violin plots, ECDFs, and poly(A) status
+(log2 polyA/RiboZero ratio).
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+source("00_setup.R")
+load(file.path(results_dir, "01_groups.RData"))
+```
+
+## Load timecourse data and merge with groups
+
+```{r load-timecourse}
+santi <- fread(file.path(data_dir, "santi_timecourse.csv"))
+
+groups_timecourse <- left_join(groups, santi, by = "Gene_ID")
+
+cat("Genes in timecourse with group assignment:", nrow(groups_timecourse), "\n")
+```
+
+## RiboZero expression — sina plot
+
+```{r ribozero-sina, fig.width=8, fig.height=6}
+ribozero_sina <- groups_timecourse |>
+  dplyr::select(!contains("aamanitin")) |>
+  pivot_longer(
+    cols = starts_with("Treatment"),
+    names_to = c("timepoint", "type"),
+    names_pattern = "Treatment_wt-(.)_hrs-RNAseq_(.*)",
+    values_to = "expression"
+  ) |>
+  filter(type == "ribo") |>
+  ggplot(aes(x = timepoint, y = log2(expression), fill = group, color = group)) +
+  geom_sina(shape = 21, size = 1, stroke = 0.15) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.5,
+               position = position_dodge(width = 0.9),
+               aes(group = group), color = "black") +
+  coord_cartesian(ylim = c(0, 10)) +
+  theme_pubr() +
+  scale_fill_manual(values = alpha(colors_guide, 0.5)) +
+  scale_color_manual(values = colors_guide) +
+  labs(x = "Timepoint (hpf)",
+       y = "RNA expression (log2 TPM) in Ribo-Zero data",
+       fill = "Group", title = "Ribo-Zero")
+
+ribozero_sina
+ggsave(file.path(figures_dir, "ribozero_timecourse_sinaplot.pdf"), ribozero_sina, width = 7, height = 7)
+```
+
+## RiboZero expression — cummulative
+
+```{r ribozero-ecdf, fig.width=10, fig.height=6}
+ribozero_ecdf <- groups_timecourse |>
+  dplyr::select(!contains("aamanitin")) |>
+  pivot_longer(
+    cols = starts_with("Treatment"),
+    names_to = c("timepoint", "type"),
+    names_pattern = "Treatment_wt-(.)_hrs-RNAseq_(.*)",
+    values_to = "expression"
+  ) |>
+  filter(type == "ribo", timepoint < 5) |>
+  ggplot(aes(x = log2(expression), color = group)) +
+  stat_ecdf(geom = "step") +
+  theme_pubr() +
+  scale_color_manual(values = colors_guide) +
+  labs(x = "RNA expression (log2 TPM)", fill = "Group", title = "Ribo-Zero ECDF") +
+  coord_cartesian(xlim = c(0, 10)) +
+  facet_wrap(~timepoint)
+
+ribozero_ecdf
+ggsave(file.path(figures_dir, "ribozero_cummulative.pdf"), ribozero_ecdf, width = 7, height = 7)
+```
+
+## Poly(A)-selected expression — sina plot
+
+```{r polya-sina, fig.width=8, fig.height=6}
+polyA_sinaplot <- groups_timecourse |>
+  dplyr::select(!contains("aamanitin")) |>
+  pivot_longer(
+    cols = starts_with("Treatment"),
+    names_to = c("timepoint", "type"),
+    names_pattern = "Treatment_wt-(.)_hrs-RNAseq_(.*)",
+    values_to = "expression"
+  ) |>
+  filter(type == "polya") |>
+  ggplot(aes(x = timepoint, y = log2(expression + 0.05), fill = group, color = group)) +
+  geom_sina(shape = 21, size = 1, stroke = 0.15) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.5,
+               position = position_dodge(width = 0.9),
+               aes(group = group), color = "black") +
+  coord_cartesian(ylim = c(0, 10)) +
+  theme_pubr() +
+  scale_fill_manual(values = alpha(colors_guide, 0.5)) +
+  scale_color_manual(values = colors_guide) +
+  labs(x = "Timepoint (hpf)",
+       y = "RNA expression (log2 TPM) in Poly(A) data",
+       color = "Group", title = "Poly(A)")
+
+polyA_sinaplot
+ggsave(file.path(figures_dir, "polya_timecourse_sinaplot.pdf"), polyA_sinaplot, width = 7, height = 7)
+```
+
+## Alpha-amanitin expression — sina plot
+
+```{r aamanitin-sina, fig.width=8, fig.height=6}
+aamanitin_sina <- groups_timecourse |>
+  dplyr::select(1:4, contains("aamanitin")) |>
+  pivot_longer(
+    cols = starts_with("Treatment"),
+    names_to = c("type", "timepoint"),
+    names_pattern = "Treatment_(.*)-(.*)_hrs-RNAseq_polya",
+    values_to = "expression"
+  ) |>
+  ggplot(aes(x = timepoint, y = log2(expression + 0.05), fill = group, color = group)) +
+  geom_sina(shape = 21, size = 1, stroke = 0.15) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.5,
+               position = position_dodge(width = 0.9),
+               aes(group = group), color = "black") +
+  coord_cartesian(ylim = c(0, 10)) +
+  theme_pubr() +
+  scale_fill_manual(values = alpha(colors_guide, 0.5)) +
+  scale_color_manual(values = colors_guide) +
+  labs(x = "Timepoint (hpf)",
+       y = "RNA expression (log2 TPM)",
+       color = "Group", title = "Poly(A) with alpha-amanitin")
+
+aamanitin_sina
+ggsave(file.path(figures_dir, "aamanitin_sina.pdf"), width = 7, height = 7)
+```
+
+## Poly(A) status (deadenylation proxy) — sina plot
+
+```{r polya-status, fig.width=10, fig.height=6}
+pseudocount <- 0.05
+
+polya_status_sina <- groups_timecourse |>
+  dplyr::select(!contains("aamanitin")) |>
+  mutate(across(
+    .cols = matches("Treatment_wt-[0-8]_hrs-RNAseq_polya"),
+    .fns  = ~ log2((.x + pseudocount) /
+                   (get(str_replace(cur_column(), "_polya$", "_ribo")) + pseudocount)),
+    .names = "PolyvsRibo_{str_extract(.col, '(?<=wt-)[0-8]')}"
+  )) |>
+  # Manual fallback: compute ratios explicitly for clarity
+  mutate(
+    PolyvsRibo_0h = log2((`Treatment_wt-0_hrs-RNAseq_polya` + pseudocount) /
+                         (`Treatment_wt-0_hrs-RNAseq_ribo` + pseudocount)),
+    PolyvsRibo_1h = log2((`Treatment_wt-1_hrs-RNAseq_polya` + pseudocount) /
+                         (`Treatment_wt-1_hrs-RNAseq_ribo` + pseudocount)),
+    PolyvsRibo_2h = log2((`Treatment_wt-2_hrs-RNAseq_polya` + pseudocount) /
+                         (`Treatment_wt-2_hrs-RNAseq_ribo` + pseudocount)),
+    PolyvsRibo_3h = log2((`Treatment_wt-3_hrs-RNAseq_polya` + pseudocount) /
+                         (`Treatment_wt-3_hrs-RNAseq_ribo` + pseudocount)),
+    PolyvsRibo_4h = log2((`Treatment_wt-4_hrs-RNAseq_polya` + pseudocount) /
+                         (`Treatment_wt-4_hrs-RNAseq_ribo` + pseudocount))
+  ) |>
+  dplyr::select(-starts_with("Treatment")) |>
+  pivot_longer(cols = starts_with("PolyvsRibo"),
+               names_to = "timepoint", names_pattern = "PolyvsRibo_(.*)",
+               values_to = "log2_fc") |>
+  ggplot(aes(x = timepoint, y = log2_fc, fill = group, color = group)) +
+  geom_sina(shape = 21, size = 1, stroke = 0.3) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.5,
+               position = position_dodge(width = 0.9),
+               aes(group = group), color = "black") +
+  coord_cartesian(ylim = c(-3, 2.5)) +
+  theme_pubr() +
+  guides(color = "none",
+         fill = guide_legend(override.aes = list(shape = 21, stroke = 0.5, size = 2))) +
+  scale_fill_manual(values = alpha(colors_guide, 0.5)) +
+  scale_color_manual(values = colors_guide) +
+  labs(x = "Timepoint (hpf)", y = "log2 FC Poly(A) / Ribo-Zero",
+       title = "Poly(A) status", fill = "Group")
+
+polya_status_sina
+ggsave(file.path(figures_dir, "polya_status_sina.pdf"), polya_status_sina, width = 7, height = 7)
+```
+
+## Save intermediate objects
+
+```{r save}
+save(
+  santi, groups_timecourse,
+  file = file.path(results_dir, "03_timecourse.RData")
+)
+```

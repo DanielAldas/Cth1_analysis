@@ -1,0 +1,143 @@
+---
+title: "Step 1: Define Gene Groups"
+author: "Daniel Aldas-Bulos"
+date: "2025-07-21"
+output: html_document
+---
+
+## Purpose
+
+Define the gene groups used throughout the Figure 5 analysis:
+
+- **g3**: Genes significantly upregulated (logFC ≥ 0.5, padj ≤ 0.05) by *both*
+  gRNA2 and gRNA7 at 4 hpf upon cth1 KD.
+- **c1–c4**: Four non-overlapping random control sets (n = 500 each) drawn from
+  genes that are *not* significantly upregulated by either gRNA.
+- **cth1**: The cth1 gene itself, highlighted separately.
+
+Filtering criteria applied before group assignment:
+
+1. 3'UTR length between 100 and 800 nt.
+2. Expression ≥ 5 CPM in cas13d-alone controls.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+source("00_setup.R")
+```
+
+## Load DGE results
+
+```{r load-data}
+original_KD <- fread(file.path(data_dir, "original_KD_DGE_results.csv"))
+
+# Remove g13 columns (deprecated guide)
+original_KD <- original_KD |>
+  dplyr::select(Gene_ID, !contains("g13"))
+
+DGE_OE <- fread(file.path(data_dir, "DGE_new_OE.csv"))
+
+DGE_OE_4h <- DGE_OE |>
+  dplyr::select(Gene_ID, Name, contains("4h") & !contains("orf_oe"))
+```
+
+## Apply filters
+
+```{r apply-filters}
+# 3'UTR length filter
+len_3utr <- fread(file.path(data_dir, "utr3_protein_coding_longest_tx_Ariel.txt"))
+len_3utr_filter <- len_3utr |> filter(Len <= 800 & Len >= 100)
+
+# Expression filter (CPM >= 5 in cas13d-alone)
+expression_filter <- original_KD |> filter(s_cas13d_2h1.CPM >= 5)
+
+# Merge KD and OE at 4h, then apply both filters
+DGE_results_4h_all <- merge(original_KD, DGE_OE_4h, by = "Gene_ID")
+
+DGE_results_4h_filtered <- DGE_results_4h_all |>
+  filter(Gene_ID %in% len_3utr_filter$Gene_ID &
+         Gene_ID %in% expression_filter$Gene_ID)
+
+DGE_OE_4h_filtered <- DGE_OE_4h |>
+  filter(Gene_ID %in% DGE_results_4h_filtered$Gene_ID)
+```
+
+## Define g3 group (upregulated by both gRNAs)
+
+```{r define-g3}
+new_g3 <- DGE_results_4h_filtered |>
+  filter(
+    s_cas13d_pos_syn_g2_4h_VS_s_cas13d_4h.logFC >= 0.5 &
+    s_cas13d_pos_syn_g2_4h_VS_s_cas13d_4h.padj  <= 0.05 &
+    s_cas13d_pos_syn_g7_4h_VS_s_cas13d_4h.logFC >= 0.5 &
+    s_cas13d_pos_syn_g7_4h_VS_s_cas13d_4h.padj  <= 0.05
+  ) |>
+  mutate(group = "g3")
+
+cat("g3 group size:", nrow(new_g3), "genes\n")
+```
+
+## Define control groups (c1–c4)
+
+```{r define-controls}
+set.seed(42)
+
+DGE_results_control <- DGE_results_4h_filtered |>
+  filter(
+    s_cas13d_pos_syn_g2_4h_VS_s_cas13d_4h.logFC < 0.5 &
+    s_cas13d_pos_syn_g2_4h_VS_s_cas13d_4h.padj  > 0.05 &
+    s_cas13d_pos_syn_g7_4h_VS_s_cas13d_4h.logFC < 0.5 &
+    s_cas13d_pos_syn_g7_4h_VS_s_cas13d_4h.padj  > 0.05
+  )
+
+shuffled_indices <- sample(nrow(DGE_results_control))
+
+c1 <- DGE_results_control[shuffled_indices[1:500], ]       |> mutate(group = "c1")
+c2 <- DGE_results_control[shuffled_indices[501:1000], ]    |> mutate(group = "c2")
+c3 <- DGE_results_control[shuffled_indices[1001:1500], ]   |> mutate(group = "c3")
+c4 <- DGE_results_control[shuffled_indices[1501:2000], ]   |> mutate(group = "c4")
+
+control_data <- bind_rows(c1, c2, c3, c4)
+
+cat("Control pool size:", nrow(DGE_results_control), "genes\n")
+cat("Each control group: 500 genes\n")
+```
+
+## Highlight data (for scatter plots)
+
+```{r highlight-data}
+cth1_data <- DGE_results_4h_filtered |>
+  filter(Name %in% "cth1") |>
+  mutate(group = "cth1")
+
+highlight_data <- bind_rows(new_g3, cth1_data)
+```
+
+## Build groups lookup table
+
+```{r groups-table}
+groups <- bind_rows(
+  new_g3 |> mutate(group = "g3"),
+  c1     |> mutate(group = "c1"),
+  c2     |> mutate(group = "c2"),
+  c3     |> mutate(group = "c3"),
+  c4     |> mutate(group = "c4")
+) |>
+  dplyr::select(Gene_ID, group)
+
+groups <- left_join(groups, len_3utr |> dplyr::select(Gene_ID, Gene_Name, Transcript_ID), by = "Gene_ID")
+
+cat("Total genes in groups table:", nrow(groups), "\n")
+```
+
+## Save intermediate objects
+
+```{r save}
+# Save key objects for use by downstream scripts
+save(
+  original_KD, DGE_OE_4h, DGE_results_4h_filtered, DGE_OE_4h_filtered,
+  len_3utr, len_3utr_filter, expression_filter,
+  new_g3, c1, c2, c3, c4, control_data, highlight_data, cth1_data,
+  groups,
+  file = file.path(results_dir, "01_groups.RData")
+)
+```

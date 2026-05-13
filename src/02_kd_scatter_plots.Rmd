@@ -1,0 +1,268 @@
+---
+title: "Step 2: KD Scatter Plots and Overlap Diagrams"
+author: "Daniel Aldas-Bulos"
+date: "2025-07-21"
+output: html_document
+---
+
+## Purpose
+
+Visualize the concordance between gRNA2 and gRNA7 knockdown effects:
+
+- Scatter plots of log2 FC (gRNA2 vs gRNA7) with gene groups highlighted.
+- Scatter plots for alpha-amanitin–treated conditions.
+- Euler/Venn diagrams showing overlap of significantly upregulated and
+  downregulated genes across gRNAs and timepoints.
+- Pure zygotic gene overlays.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+source("00_setup.R")
+load(file.path(results_dir, "01_groups.RData"))
+```
+
+## Significance classification
+
+```{r significance-classification}
+original_KD <- original_KD |>
+  mutate(significant_in = case_when(
+    (s_cas13d_pos_syn_g2_4h_VS_s_cas13d_4h.padj <= 0.05 &
+     s_cas13d_pos_syn_g7_4h_VS_s_cas13d_4h.padj <= 0.05) ~ "Both",
+    (s_cas13d_pos_syn_g2_4h_VS_s_cas13d_4h.padj <= 0.05 &
+     s_cas13d_pos_syn_g7_4h_VS_s_cas13d_4h.padj >  0.05) ~ "g2",
+    (s_cas13d_pos_syn_g2_4h_VS_s_cas13d_4h.padj >  0.05 &
+     s_cas13d_pos_syn_g7_4h_VS_s_cas13d_4h.padj <= 0.05) ~ "g7",
+    .default = "none"
+  ))
+
+original_KD$significant_in <- factor(
+  original_KD$significant_in,
+  levels = c("none", "g2", "g7", "Both")
+)
+```
+
+## gRNA2 vs gRNA7 scatter (significance)
+
+```{r scatter-significance}
+scatter_significant <- original_KD |>
+  arrange(significant_in) |>
+  ggplot(aes(
+    x     = s_cas13d_pos_syn_g2_4h_VS_s_cas13d_4h.logFC,
+    y     = s_cas13d_pos_syn_g7_4h_VS_s_cas13d_4h.logFC,
+    color = significant_in,
+    alpha = significant_in
+  )) +
+  geom_point() +
+  scale_color_manual(values = c("lightgray", "palegreen3", "lightsalmon", "dodgerblue")) +
+  scale_alpha_manual(values = c(0.3, 0.5, 0.5, 0.8)) +
+  theme_minimal()
+
+scatter_significant
+ggsave(file.path(figures_dir, "scatter_significant.pdf"), scatter_significant, width = 7, height = 7)
+```
+
+## gRNA2 vs gRNA7 scatter (gene groups)
+
+```{r scatter-groups}
+kd_scatter_groups <- DGE_results_4h_filtered |>
+  ggplot(aes(
+    x = s_cas13d_pos_syn_g2_4h_VS_s_cas13d_4h.logFC,
+    y = s_cas13d_pos_syn_g7_4h_VS_s_cas13d_4h.logFC
+  )) +
+  geom_point(fill = alpha("lightgray", 0.5), color = "lightgray",
+             shape = 21, stroke = 0.15, size = 0.8) +
+  geom_vline(xintercept = 0) +
+  geom_hline(yintercept = 0) +
+  geom_point(data = control_data,
+             aes(fill = group, color = group),
+             shape = 21, stroke = 0.15, size = 0.8) +
+  ggpubr::stat_cor(color = "black", size = 3) +
+  geom_point(data = highlight_data,
+             aes(fill = group, color = group),
+             shape = 21, stroke = 0.3, size = 0.8) +
+  geom_text_repel(
+    data = highlight_data |> filter(group == "cth1"),
+    aes(label = group),
+    segment.colour = "black", segment.size = 0.3,
+    segment.alpha = 0.7, min.segment.length = 0.1
+  ) +
+  guides(color = "none",
+         fill = guide_legend(override.aes = list(shape = 21, stroke = 0.3, size = 4))) +
+  scale_fill_manual(values = alpha(colors_guide, 0.5)) +
+  scale_color_manual(values = colors_guide) +
+  coord_cartesian(xlim = c(-2, 3), ylim = c(-2, 3)) +
+  theme_pubr() +
+  labs(x = "RNA Log2 FC cth1 KD with gRNA2 vs cas13d alone",
+       y = "RNA Log2 FC cth1 KD with gRNA7 vs cas13d alone",
+       fill = "Group")
+
+kd_scatter_groups
+ggsave(file.path(figures_dir, "scatter_KD_groups.pdf"), kd_scatter_groups, width = 7, height = 7)
+```
+
+## Alpha-amanitin scatter
+
+```{r scatter-alpha}
+control_data_alpha <- merge(
+  control_data |> dplyr::select(Gene_ID, group),
+  DGE_OE_4h_filtered,
+  by = "Gene_ID"
+)
+
+highlight_data_alpha <- merge(
+  highlight_data |> dplyr::select(Gene_ID, group),
+  DGE_OE_4h_filtered,
+  by = "Gene_ID"
+)
+highlight_data_alpha <- rbind(
+  highlight_data_alpha,
+  DGE_OE_4h |> filter(Name == "cth1") |> mutate(group = "cth1")
+)
+
+scatter_alpha <- DGE_OE_4h_filtered |>
+  ggplot(aes(
+    x = s_cas13d_alfa_g2_4h_VS_s_cas13d_alfa_alone_4h.logFC,
+    y = s_cas13d_alfa_g7_4h_VS_s_cas13d_alfa_alone_4h.logFC
+  )) +
+  geom_point(fill = alpha("lightgray", 0.5), color = "lightgray",
+             shape = 21, stroke = 0.15, size = 0.8) +
+  geom_vline(xintercept = 0) +
+  geom_hline(yintercept = 0) +
+  geom_point(data = control_data_alpha,
+             aes(fill = group, color = group),
+             shape = 21, stroke = 0.15, size = 0.8) +
+  ggpubr::stat_cor(color = "black", size = 3) +
+  geom_point(data = highlight_data_alpha,
+             aes(fill = group, color = group),
+             shape = 21, stroke = 0.3, size = 0.8) +
+  geom_text_repel(
+    data = highlight_data_alpha |> filter(group == "cth1"),
+    aes(label = group),
+    segment.colour = "black", segment.size = 0.3,
+    segment.alpha = 0.7, min.segment.length = 0.1
+  ) +
+  guides(color = "none",
+         fill = guide_legend(override.aes = list(shape = 21, stroke = 0.3, size = 4))) +
+  scale_fill_manual(values = alpha(colors_guide, 0.5)) +
+  scale_color_manual(values = colors_guide) +
+  coord_cartesian(xlim = c(-2, 3), ylim = c(-2, 3)) +
+  theme_pubr() +
+  labs(x = "RNA Log2 FC cth1 KD with gRNA2 vs cas13d alone (alpha-amanitin)",
+       y = "RNA Log2 FC cth1 KD with gRNA7 vs cas13d alone (alpha-amanitin)",
+       fill = "Group")
+
+scatter_alpha
+ggsave(file.path(figures_dir, "scatter_KD_groups_alpha.pdf"), scatter_alpha, width = 7, height = 7)
+```
+
+## Euler diagrams (upregulated / downregulated gene overlap)
+
+```{r euler-upregulated}
+# Helper: extract upregulated gene sets
+extract_upreg <- function(df, lfc_col, padj_col, label) {
+  df |>
+    filter(.data[[lfc_col]] > 0, .data[[padj_col]] <= 0.05) |>
+    transmute(Gene_ID, grna = label, value = TRUE)
+}
+
+upregulated <- bind_rows(
+  extract_upreg(original_KD, "s_cas13d_pos_syn_g2_2h_VS_s_cas13d_2h.logFC",
+                "s_cas13d_pos_syn_g2_2h_VS_s_cas13d_2h.padj", "sg2 2hpf"),
+  extract_upreg(original_KD, "s_cas13d_pos_syn_g7_2h_VS_s_cas13d_2h.logFC",
+                "s_cas13d_pos_syn_g7_2h_VS_s_cas13d_2h.padj", "sg7 2hpf"),
+  extract_upreg(original_KD, "s_cas13d_pos_syn_g2_4h_VS_s_cas13d_4h.logFC",
+                "s_cas13d_pos_syn_g2_4h_VS_s_cas13d_4h.padj", "sg2 4hpf"),
+  extract_upreg(original_KD, "s_cas13d_pos_syn_g7_4h_VS_s_cas13d_4h.logFC",
+                "s_cas13d_pos_syn_g7_4h_VS_s_cas13d_4h.padj", "sg7 4hpf")
+) |>
+  distinct(Gene_ID, grna, .keep_all = TRUE) |>
+  pivot_wider(names_from = grna, values_from = value,
+              values_fill = list(value = FALSE), values_fn = list(value = any))
+
+fit_up <- euler(upregulated |> dplyr::select(-Gene_ID))
+
+p_up <- plot(fit_up, shape = "ellipse", ggplot = TRUE, quantities = TRUE,
+             labels = FALSE, legend = TRUE, main = "Upregulated genes",
+             fills = list(fill = c("sg2 2hpf" = "darkolivegreen1",
+                                   "sg7 2hpf" = "coral1",
+                                   "sg2 4hpf" = "darkolivegreen4",
+                                   "sg7 4hpf" = "coral4"), alpha = 0.6))
+p_up
+ggsave(file.path(figures_dir, "venn_upregulated.png"), p_up, limitsize = FALSE, width = 7, height = 7)
+```
+
+```{r euler-downregulated}
+extract_downreg <- function(df, lfc_col, padj_col, label) {
+  df |>
+    filter(.data[[lfc_col]] < 0, .data[[padj_col]] <= 0.05) |>
+    transmute(Gene_ID, grna = label, value = TRUE)
+}
+
+downregulated <- bind_rows(
+  extract_downreg(original_KD, "s_cas13d_pos_syn_g2_2h_VS_s_cas13d_2h.logFC",
+                  "s_cas13d_pos_syn_g2_2h_VS_s_cas13d_2h.padj", "sg2 2hpf"),
+  extract_downreg(original_KD, "s_cas13d_pos_syn_g7_2h_VS_s_cas13d_2h.logFC",
+                  "s_cas13d_pos_syn_g7_2h_VS_s_cas13d_2h.padj", "sg7 2hpf"),
+  extract_downreg(original_KD, "s_cas13d_pos_syn_g2_4h_VS_s_cas13d_4h.logFC",
+                  "s_cas13d_pos_syn_g2_4h_VS_s_cas13d_4h.padj", "sg2 4hpf"),
+  extract_downreg(original_KD, "s_cas13d_pos_syn_g7_4h_VS_s_cas13d_4h.logFC",
+                  "s_cas13d_pos_syn_g7_4h_VS_s_cas13d_4h.padj", "sg7 4hpf")
+) |>
+  distinct(Gene_ID, grna, .keep_all = TRUE) |>
+  pivot_wider(names_from = grna, values_from = value,
+              values_fill = list(value = FALSE), values_fn = list(value = any))
+
+fit_down <- euler(downregulated |> dplyr::select(-Gene_ID))
+
+p_down <- plot(fit_down, shape = "ellipse", ggplot = TRUE, quantities = TRUE,
+               labels = FALSE, legend = TRUE, main = "Downregulated genes",
+               fills = list(fill = c("sg2 2hpf" = "darkolivegreen1",
+                                     "sg7 2hpf" = "coral1",
+                                     "sg2 4hpf" = "darkolivegreen4",
+                                     "sg7 4hpf" = "coral4"), alpha = 0.6))
+p_down
+ggsave(file.path(figures_dir, "venn_downregulated.png"), p_down, limitsize = FALSE, width = 7, height = 7)
+```
+
+## Pure zygotic gene overlay
+
+```{r zygotic-scatter}
+pure_zygotic <- fread(file.path(data_dir, "Zygotic.csv"))
+
+zygotic_data <- DGE_OE_4h_filtered |>
+  filter(Gene_ID %in% pure_zygotic$gene_id) |>
+  mutate(group = "Pure zygotic genes")
+
+zygotic_scatter <- DGE_OE_4h_filtered |>
+  ggplot(aes(
+    x = s_cas13d_alfa_g2_4h_VS_s_cas13d_alfa_alone_4h.logFC,
+    y = s_cas13d_alfa_g7_4h_VS_s_cas13d_alfa_alone_4h.logFC
+  )) +
+  geom_point(fill = alpha("lightgray", 0.5), color = "lightgray",
+             shape = 21, stroke = 0.15, size = 0.8) +
+  geom_vline(xintercept = 0) +
+  geom_hline(yintercept = 0) +
+  geom_point(data = zygotic_data,
+             aes(fill = group, color = group),
+             shape = 21, stroke = 0.15, size = 0.8) +
+  guides(color = "none",
+         fill = guide_legend(override.aes = list(shape = 21, stroke = 0.3, size = 4))) +
+  scale_fill_manual(values = alpha("gold", 0.5)) +
+  scale_color_manual(values = "gold") +
+  theme_pubr() +
+  labs(x = "RNA Log2 FC cth1 KD with gRNA2 vs cas13d alone (alpha-amanitin)",
+       y = "RNA Log2 FC cth1 KD with gRNA7 vs cas13d alone (alpha-amanitin)",
+       fill = "Group")
+
+zygotic_scatter
+ggsave(file.path(figures_dir, "zygotic_scatter.pdf"), zygotic_scatter, width = 7, height = 7)
+```
+
+## Save intermediate objects
+
+```{r save}
+save(
+  scatter_alpha, control_data_alpha, highlight_data_alpha,
+  file = file.path(results_dir, "02_scatter.RData")
+)
+```

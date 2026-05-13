@@ -1,0 +1,187 @@
+---
+title: "Step 8: Poly(A) Status Scoring and ECDF Analysis"
+author: "Daniel Aldas-Bulos"
+date: "2026-07-21"
+output: html_document
+---
+
+## Purpose
+
+Compute poly(A) status scores as log2(polyA TPM / RiboZero TPM) per gene,
+then compare fold changes of this score between KD and control conditions
+using ECDFs and Wilcoxon/KS tests. Also filters out genes with zero TPM in
+both libraries.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+source("00_setup.R")
+load(file.path(results_dir, "01_groups.RData"))
+load(file.path(results_dir, "03_timecourse.RData"))
+load(file.path(results_dir, "07_endogenous.RData"))
+```
+
+## Compute poly(A) status scores from mean TPMs
+
+
+```{r compute-scores}
+
+combined_tpm <- fread(file.path(data_dir, "combined_tpm.csv"))
+
+tpm_long <- combined_tpm %>%
+  pivot_longer(cols = -c(Gene_ID, Name),
+               names_to = "sample_full",
+               values_to = "TPM") %>%
+  separate(sample_full, into = c("replicate", "library"), sep = "\\.") %>%
+  mutate(sample = str_remove(replicate, "_?[123]$"))
+
+tpm_mean <- tpm_long %>%
+  group_by(Gene_ID, Name, sample, library) %>%
+  summarise(mean_TPM = mean(TPM), .groups = "drop") %>%
+  mutate(sample_lib = paste0(sample, ".", library)) %>%
+  dplyr::select(Gene_ID, Name, sample_lib, mean_TPM) %>%
+  pivot_wider(names_from = sample_lib, values_from = mean_TPM)
+
+pseudocount <- 0.05
+
+# Compute polyA status:
+polyA_cols <- grep("\\.polyA$", colnames(tpm_mean), value = TRUE)
+samples    <- str_remove(polyA_cols, "\\.polyA$")
+
+score_cols <- map_dfc(samples, function(s) {
+  polyA_val <- tpm_mean[[paste0(s, ".polyA")]]
+  ribo_val  <- tpm_mean[[paste0(s, ".ribo")]]
+  score     <- log2((polyA_val + pseudocount) / (ribo_val + pseudocount))
+  tibble(!!paste0("polyA_status.", s) := score)
+})
+
+polyA_status <- bind_cols(
+  tpm_mean |> dplyr::select(Gene_ID, Name),
+  score_cols
+)
+```
+
+
+## PolyA status with Cth1 KD inn zygotic genes
+
+```{r}
+polyA_status_groups <- inner_join(polyA_status, endogenous_groups_data |> dplyr::select(Gene_ID, group), by = "Gene_ID")
+
+polyA_status_groups_FC <- polyA_status_groups |>
+  mutate(polyA_status_FC.alone_vs_g1 =  polyA_status.s_cas13d_pos_syn_g2_4h - polyA_status.s_cas13d_4h,
+         polyA_status_FC.alone_vs_g2 =  polyA_status.s_cas13d_pos_syn_g7_4h - polyA_status.s_cas13d_4h,
+         polyA_status_FC.alone_vs_g1_with_alpha = polyA_status.s_cas13d_alfa_g2_4h - polyA_status.s_cas13d_alfa_alone_4h,
+         polyA_status_FC.alone_vs_g2_with_alpha = polyA_status.s_cas13d_alfa_g7_4h - polyA_status.s_cas13d_alfa_alone_4h,
+         ) |>
+  dplyr::select(Gene_ID, Name, group, contains("FC"))
+```
+
+```{r}
+polyA_status_groups |> 
+  ggplot(aes(x = polyA_status.s_cas13d_4h, color = group)) +
+    stat_ecdf(geom = "step", linewidth = 0.7) +
+    coord_cartesian(xlim = c(0, 4)) +
+    scale_color_manual(values = highlight_colors) +
+    labs(
+         x = "polyA status FC",
+         y = "Cumulative fraction") +
+    theme_pubr(base_size = 11) +
+    theme(legend.position = "bottom",
+          legend.title = element_blank())
+  
+```
+
+
+```{r}
+# FC columns to plot
+fc_cols <- c("polyA_status_FC.alone_vs_g1",
+             "polyA_status_FC.alone_vs_g2",
+             "polyA_status_FC.alone_vs_g1_with_alpha",
+             "polyA_status_FC.alone_vs_g2_with_alpha")
+
+# Cleaner titles for each plot
+fc_labels <- c("alone vs g1", "alone vs g2",
+               "alone vs g1 (with alpha)", "alone vs g2 (with alpha)")
+
+groups_of_interest <- c("one site", "3A 8mer", "2A 8mer", "more than one site")
+
+control_vals_list <- map(fc_cols, ~ polyA_status_groups_FC |> filter(group == "Rest of genes") |> pull(.x))
+names(control_vals_list) <- fc_cols
+```
+
+Discarting genes that has 0 tpms in both polyA and ribo
+
+```{r}
+# Identify genes with 0 TPM in both libraries for the alpha samples
+unexpressed_alpha <- tpm_mean %>%
+  filter(s_cas13d_alfa_alone_4h.polyA == 0 & s_cas13d_alfa_alone_4h.ribo == 0 |
+         s_cas13d_alfa_g2_4h.polyA == 0 & s_cas13d_alfa_g2_4h.ribo == 0 |
+         s_cas13d_alfa_g7_4h.polyA == 0 & s_cas13d_alfa_g7_4h.ribo == 0) %>%
+  pull(Gene_ID)
+
+df_filtered <- polyA_status_groups_FC %>%
+  mutate(
+    polyA_status_FC.alone_vs_g1_with_alpha = ifelse(
+      Gene_ID %in% unexpressed_alpha, NA,
+      polyA_status_FC.alone_vs_g1_with_alpha),
+    polyA_status_FC.alone_vs_g2_with_alpha = ifelse(
+      Gene_ID %in% unexpressed_alpha, NA,
+      polyA_status_FC.alone_vs_g2_with_alpha)
+  )
+
+
+```
+
+```{r}
+# Build one ECDF plot per FC column with KS p-values
+plots <- imap(fc_cols, function(fc_col, i) {
+  
+  # KS tests: each group vs Rest of genes
+  ks_results <- map_dfr(groups_of_interest, function(grp) {
+    grp_vals  <- df_filtered %>% filter(group == grp) %>% pull(fc_col) %>% na.omit()
+    ctrl_vals <- df_filtered %>% filter(group == "Rest of genes") %>% pull(fc_col) %>% na.omit()
+    test <- suppressWarnings(wilcox.test(grp_vals, ctrl_vals))
+    tibble(group = grp, D = test$statistic, p = test$p.value, n = length(grp_vals))
+  }) %>%
+    mutate(
+      padj  = p.adjust(p, method = "BH"),
+      label = paste0(group, " (n=", n, ")",
+                     ", p=", format.pval(padj, digits = 2))
+    )
+  
+  # Plot
+  ggplot(df_filtered, aes(x = .data[[fc_col]], color = group)) +
+    stat_ecdf(geom = "step", linewidth = 0.7) +
+    coord_cartesian(xlim = c(-0.8, 1)) +
+    scale_color_manual(values = highlight_colors) +
+    annotate("text",
+             x = 1,
+             y = seq(0.20, 0.05, length.out = nrow(ks_results)),
+             label = ks_results$label,
+             hjust = 1, size = 2.8, color = "grey30") +
+    labs(title = fc_labels[i],
+         x = "polyA status FC",
+         y = "Cumulative fraction") +
+    theme_pubr(base_size = 11) +
+    theme(legend.position = "bottom",
+          legend.title = element_blank())
+})
+
+plots[[1]]
+plots[[2]]
+plots[[3]]
+plots[[4]]
+
+ggsave(file.path(figures_dir, "polyA_FC_alone_vs_g1_no_alpha.pdf"), plots[[1]], width = 7, height = 7)
+ggsave(file.path(figures_dir, "polyA_FC_alone_vs_g2_no_alpha.pdf"), plots[[2]], width = 7, height = 7)
+ggsave(file.path(figures_dir, "polyA_FC_alone_vs_g1_with_alpha.pdf"), plots[[3]], width = 7, height = 7)
+ggsave(file.path(figures_dir, "polyA_FC_alone_vs_g2_with_alpha.pdf"), plots[[4]], width = 7, height = 7)
+
+```
+
+
+
+## Session info
+
+```{r session-info}
+sessionInfo()
+```

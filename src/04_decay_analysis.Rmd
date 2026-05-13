@@ -1,0 +1,274 @@
+---
+title: "Step 4: RNA Decay Analysis"
+author: "Daniel Aldas-Bulos"
+date: "2025-07-21"
+output: html_document
+---
+
+## Purpose
+
+Compute RNA decay rates as log2 fold change of TPM at later timepoints
+relative to 2 hpf, for three library types: RiboZero, Poly(A)-selected,
+and alpha-amanitin–treated Poly(A). Compare decay between g3 and control
+groups using boxplots, sina plots, violin plots, ECDFs, and Wilcoxon tests.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+source("00_setup.R")
+load(file.path(results_dir, "01_groups.RData"))
+load(file.path(results_dir, "03_timecourse.RData"))
+```
+
+## Helper: compute decay log2 FC
+
+```{r helper}
+#' Compute log2 FC of TPM at later timepoints vs. a reference timepoint
+#' @param df         Data.frame with TPM columns.
+#' @param prefix     Column prefix pattern (e.g., "Treatment_wt-").
+#' @param suffix     Column suffix (e.g., "_hrs-RNAseq_ribo").
+#' @param ref_tp     Reference timepoint string (e.g., "2").
+#' @param later_tps  Character vector of later timepoints.
+#' @param label      Label prefix for output columns (e.g., "Ribo").
+compute_decay <- function(df, prefix, suffix, ref_tp, later_tps, label) {
+  pseudocount <- 0.05
+  ref_col <- paste0(prefix, ref_tp, suffix)
+  for (tp in later_tps) {
+    tp_col  <- paste0(prefix, tp, suffix)
+    out_col <- paste0(label, "_", tp, "hpf/", ref_tp, "hpf")
+    df[[out_col]] <- log2((df[[tp_col]] + pseudocount) / (df[[ref_col]] + pseudocount))
+  }
+  df
+}
+```
+
+## i. RiboZero decay
+
+```{r decay-ribo}
+decay_ribo <- santi |>
+  filter(`Treatment_wt-0_hrs-RNAseq_ribo` > 5) |>
+  dplyr::select(Gene_ID, ends_with("_ribo")) |>
+  compute_decay("Treatment_wt-", "_hrs-RNAseq_ribo", "2", 3:8, "Ribo") |>
+  dplyr::select(-starts_with("Treatment")) |>
+  pivot_longer(cols = starts_with("Ribo"),
+               names_to = "timepoint", names_pattern = "Ribo_(.*)",
+               values_to = "log2_fc")
+
+decay_ribo_groups <- left_join(
+  groups_timecourse |> dplyr::select(Gene_ID, group),
+  decay_ribo, by = "Gene_ID"
+)
+```
+
+```{r ribo-sina, fig.width=8, fig.height=6}
+decay_ribo_sina <- decay_ribo_groups |>
+  na.omit() |>
+  ggplot(aes(x = timepoint, y = log2_fc, color = group, fill = group)) +
+  geom_sina(shape = 21, size = 1, stroke = 0.15) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.5,
+               position = position_dodge(width = 0.9),
+               aes(group = group), color = "black") +
+  coord_cartesian(ylim = c(-3, 1)) +
+  theme_pubr() +
+  scale_fill_manual(values = alpha(colors_guide, 0.5)) +
+  scale_color_manual(values = colors_guide) +
+  labs(x = "Timepoint", y = "Log2 FC (late / 2 hpf)",
+       title = "RNA decay — RiboZero", color = "Group")
+
+decay_ribo_sina
+ggsave(file.path(figures_dir, "decay_ribo_sina.pdf"), decay_ribo_sina)
+```
+
+```{r ribo-ecdf, fig.width=10, fig.height=6}
+decay_ribo_ecdf <- decay_ribo_groups |>
+  na.omit() |>
+  ggplot(aes(x = log2_fc, color = group)) +
+  stat_ecdf(geom = "step") +
+  coord_cartesian(xlim = c(-3, 1)) +
+  theme_pubr() +
+  scale_color_manual(values = colors_guide) +
+  labs(x = "Log2 FC (late / 2 hpf)",
+       title = "RNA decay ECDF — RiboZero", color = "Group") +
+  facet_wrap(~timepoint)
+
+decay_ribo_ecdf
+ggsave(file.path(figures_dir, "decay_ribo_ecdf.pdf"), decay_ribo_ecdf)
+```
+
+```{r ribo-pvalues}
+ribo_pvals <- map_dfr(c("3hpf/2hpf", "4hpf/2hpf", "5hpf/2hpf", "6hpf/2hpf"), function(tp) {
+  wilcox_vs_baseline(
+    data.frame(decay_ribo_groups) |> na.omit() |> filter(timepoint == tp),
+    baseline = "g3", value_col = "log2_fc", class_col = "group"
+  ) |> mutate(timepoint = tp, baseline = "g3")
+})
+
+fwrite(ribo_pvals, file.path(results_dir, "pval_decay_ribo_groups.csv"))
+```
+
+## ii. Poly(A) decay
+
+```{r decay-polya}
+decay_polya <- santi |>
+  filter(`Treatment_wt-0_hrs-RNAseq_ribo` > 5) |>
+  dplyr::select(Gene_ID, !contains("aamanitin") & ends_with("_polya")) |>
+  compute_decay("Treatment_wt-", "_hrs-RNAseq_polya", "2", 3:8, "Poly") |>
+  dplyr::select(-starts_with("Treatment")) |>
+  pivot_longer(cols = starts_with("Poly"),
+               names_to = "timepoint", names_pattern = "Poly_(.*)",
+               values_to = "log2_fc")
+
+decay_poly_groups <- left_join(
+  groups_timecourse |> dplyr::select(Gene_ID, group),
+  decay_polya, by = "Gene_ID"
+)
+```
+
+```{r polya-sina, fig.width=8, fig.height=6}
+decay_poly_sina <- decay_poly_groups |>
+  na.omit() |>
+  ggplot(aes(x = timepoint, y = log2_fc, color = group, fill = group)) +
+  geom_sina(shape = 21, size = 1, stroke = 0.15) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.5,
+               position = position_dodge(width = 0.9),
+               aes(group = group), color = "black") +
+  coord_cartesian(ylim = c(-3, 3)) +
+  theme_pubr() +
+  scale_fill_manual(values = alpha(colors_guide, 0.5)) +
+  scale_color_manual(values = colors_guide) +
+  labs(x = "Timepoint", y = "Log2 FC (late / 2 hpf)",
+       title = "RNA decay — Poly(A)", color = "Group")
+
+decay_poly_sina
+ggsave(file.path(figures_dir, "decay_polya_sina.pdf"), decay_poly_sina)
+```
+
+```{r polya-pvalues}
+polya_pvals <- map_dfr(c("3hpf/2hpf", "4hpf/2hpf", "5hpf/2hpf", "6hpf/2hpf"), function(tp) {
+  wilcox_vs_baseline(
+    data.frame(decay_poly_groups) |> na.omit() |> filter(timepoint == tp),
+    baseline = "g3", value_col = "log2_fc", class_col = "group"
+  ) |> mutate(timepoint = tp)
+})
+
+fwrite(polya_pvals, file.path(results_dir, "pval_decay_polya_groups.csv"))
+```
+
+## iii. Alpha-amanitin decay
+
+```{r decay-alpha}
+pseudocount <- 0.05
+
+decay_alpha <- santi |>
+  filter(`Treatment_wt-0_hrs-RNAseq_ribo` > 5) |>
+  dplyr::select(Gene_ID, contains("aamanitin")) |>
+  mutate(
+    `Alpha_2.5hpf/2hpf` = log2((`Treatment_aamanitin-2.5_hrs-RNAseq_polya` + pseudocount) /
+                                (`Treatment_aamanitin-2_hrs-RNAseq_polya` + pseudocount)),
+    `Alpha_3hpf/2hpf`   = log2((`Treatment_aamanitin-3_hrs-RNAseq_polya` + pseudocount) /
+                                (`Treatment_aamanitin-2_hrs-RNAseq_polya` + pseudocount)),
+    `Alpha_3.5hpf/2hpf` = log2((`Treatment_aamanitin-3.5_hrs-RNAseq_polya` + pseudocount) /
+                                (`Treatment_aamanitin-2_hrs-RNAseq_polya` + pseudocount)),
+    `Alpha_4hpf/2hpf`   = log2((`Treatment_aamanitin-4_hrs-RNAseq_polya` + pseudocount) /
+                                (`Treatment_aamanitin-2_hrs-RNAseq_polya` + pseudocount)),
+    `Alpha_4.5hpf/2hpf` = log2((`Treatment_aamanitin-4.5_hrs-RNAseq_polya` + pseudocount) /
+                                (`Treatment_aamanitin-2_hrs-RNAseq_polya` + pseudocount)),
+    `Alpha_5hpf/2hpf`   = log2((`Treatment_aamanitin-5_hrs-RNAseq_polya` + pseudocount) /
+                                (`Treatment_aamanitin-2_hrs-RNAseq_polya` + pseudocount)),
+    `Alpha_5.5hpf/2hpf` = log2((`Treatment_aamanitin-5.5_hrs-RNAseq_polya` + pseudocount) /
+                                (`Treatment_aamanitin-2_hrs-RNAseq_polya` + pseudocount)),
+    `Alpha_6hpf/2hpf`   = log2((`Treatment_aamanitin-6_hrs-RNAseq_polya` + pseudocount) /
+                                (`Treatment_aamanitin-2_hrs-RNAseq_polya` + pseudocount)),
+    `Alpha_6.5hpf/2hpf` = log2((`Treatment_aamanitin-6.5_hrs-RNAseq_polya` + pseudocount) /
+                                (`Treatment_aamanitin-2_hrs-RNAseq_polya` + pseudocount)),
+    `Alpha_7hpf/2hpf`   = log2((`Treatment_aamanitin-7_hrs-RNAseq_polya` + pseudocount) /
+                                (`Treatment_aamanitin-2_hrs-RNAseq_polya` + pseudocount)),
+    `Alpha_7.5hpf/2hpf` = log2((`Treatment_aamanitin-7.5_hrs-RNAseq_polya` + pseudocount) /
+                                (`Treatment_aamanitin-2_hrs-RNAseq_polya` + pseudocount))
+  ) |>
+  dplyr::select(-starts_with("Treatment")) |>
+  pivot_longer(cols = starts_with("Alpha"),
+               names_to = "timepoint", names_pattern = "Alpha_(.*)",
+               values_to = "log2_fc")
+
+decay_alpha_groups <- left_join(
+  groups_timecourse |> dplyr::select(Gene_ID, group),
+  decay_alpha, by = "Gene_ID"
+) |> na.omit()
+
+decay_alpha_groups$timepoint <- factor(
+  decay_alpha_groups$timepoint,
+  levels = unique(decay_alpha_groups$timepoint)
+)
+```
+
+```{r alpha-sina, fig.width=10, fig.height=6}
+decay_alpha_sina <- decay_alpha_groups |>
+  ggplot(aes(x = factor(timepoint), y = log2_fc, color = group, fill = group)) +
+  geom_sina(shape = 21, size = 1, stroke = 0.15) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.5,
+               position = position_dodge(width = 0.9),
+               aes(group = group), color = "black") +
+  coord_cartesian(ylim = c(-2.5, 2)) +
+  theme_pubr() +
+  scale_fill_manual(values = alpha(colors_guide, 0.5)) +
+  scale_color_manual(values = colors_guide) +
+  labs(x = "Timepoint", y = "Log2 FC (late / 2 hpf)",
+       title = "RNA decay — alpha-amanitin treated", color = "Group") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+decay_alpha_sina
+ggsave(file.path(figures_dir, "decay_alpha_sina.pdf"), decay_alpha_sina)
+```
+
+```{r alpha-pvalues}
+alpha_pvals <- map_dfr(c("3hpf/2hpf", "4hpf/2hpf", "5hpf/2hpf", "6hpf/2hpf"), function(tp) {
+  wilcox_vs_baseline(
+    data.frame(decay_alpha_groups) |> na.omit() |> filter(timepoint == tp),
+    baseline = "g3", value_col = "log2_fc", class_col = "group"
+  ) |> mutate(timepoint = tp)
+})
+
+fwrite(alpha_pvals, file.path(results_dir, "pval_decay_alpha_groups.csv"))
+```
+
+## Poly(A) status p-values
+
+```{r polystatus-pvalues}
+polya_status_data <- groups_timecourse |>
+  dplyr::select(!contains("aamanitin")) |>
+  mutate(
+    PolyvsRibo_0h = log2((`Treatment_wt-0_hrs-RNAseq_polya` + 0.05) /
+                         (`Treatment_wt-0_hrs-RNAseq_ribo` + 0.05)),
+    PolyvsRibo_1h = log2((`Treatment_wt-1_hrs-RNAseq_polya` + 0.05) /
+                         (`Treatment_wt-1_hrs-RNAseq_ribo` + 0.05)),
+    PolyvsRibo_2h = log2((`Treatment_wt-2_hrs-RNAseq_polya` + 0.05) /
+                         (`Treatment_wt-2_hrs-RNAseq_ribo` + 0.05)),
+    PolyvsRibo_3h = log2((`Treatment_wt-3_hrs-RNAseq_polya` + 0.05) /
+                         (`Treatment_wt-3_hrs-RNAseq_ribo` + 0.05)),
+    PolyvsRibo_4h = log2((`Treatment_wt-4_hrs-RNAseq_polya` + 0.05) /
+                         (`Treatment_wt-4_hrs-RNAseq_ribo` + 0.05))
+  ) |>
+  dplyr::select(-starts_with("Treatment")) |>
+  pivot_longer(cols = starts_with("PolyvsRibo"),
+               names_to = "timepoint", names_pattern = "PolyvsRibo_(.*)",
+               values_to = "log2_fc")
+
+polystatus_pvals <- map_dfr(c("0h", "1h", "2h", "3h", "4h"), function(tp) {
+  wilcox_vs_baseline(
+    data.frame(polya_status_data) |> na.omit() |> filter(timepoint == tp),
+    baseline = "g3", value_col = "log2_fc", class_col = "group"
+  ) |> mutate(timepoint = paste0(tp, "pf"), baseline = "g3")
+})
+
+fwrite(polystatus_pvals, file.path(results_dir, "polystatus_pval_all.csv"))
+```
+
+## Save intermediate objects
+
+```{r save}
+save(
+  decay_ribo_groups, decay_poly_groups, decay_alpha_groups,
+  polya_status_data,
+  file = file.path(results_dir, "04_decay.RData")
+)
+```
