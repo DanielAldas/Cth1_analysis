@@ -9,3 +9,4 @@ data/RNAseq/
 
 # OS artifacts
 .DS_Store
+results/*.RData
